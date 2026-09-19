@@ -8,7 +8,7 @@ last_updated: "2026-06-09"
 last_audit: "2026-06-09"
 audit_status: current
 domain: content-gen
-parent: .claude/skills/comic-ideation/SKILL.md
+parent: skills/comic-ideation/SKILL.md
 triggers:
   - "caption best practices"
   - "new yorker caption"

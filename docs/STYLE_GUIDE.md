@@ -8,7 +8,7 @@ last_updated: "2026-07-12"
 last_audit: "2026-07-12"
 audit_status: current
 domain: personal
-parent: INDEX.md
+parent: README.md
 triggers:
   - "style guide"
   - "visual style"

@@ -8,7 +8,7 @@ last_updated: "2026-08-13"
 last_audit: "2026-08-13"
 audit_status: current
 domain: personal
-parent: INDEX.md
+parent: README.md
 triggers:
   - comics chassis
   - shared chassis
