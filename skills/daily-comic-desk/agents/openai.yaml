@@ -1,0 +1,4 @@
+interface:
+  display_name: "Daily Comic Desk"
+  short_description: "Pulse, risk-kill, and run one non-clickbait cartoon day"
+  default_prompt: "Run the daily comic desk. Pulse premises, wait for the operator to pick or kill, then comic-ideation. Do not write final captions, do not click Post, and do not change the locked cartoon style prompt."

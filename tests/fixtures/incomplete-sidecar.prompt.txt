@@ -1,0 +1,8 @@
+CONCEPT:
+Fixture with intentionally incomplete provenance.
+
+CAPTION:
+This fixture must be rejected.
+
+SOURCE OUTPUT:
+fixture.png

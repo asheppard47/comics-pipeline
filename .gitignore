@@ -1,0 +1,9 @@
+# Work-in-progress panels
+outputs/prototypes/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

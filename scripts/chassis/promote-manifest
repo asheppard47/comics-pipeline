@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""Promote a hash-bound file manifest with no overwrite and rollback."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import secrets
+import shutil
+import sys
+
+
+def usage_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Promote a validated manifest of files. No overwrite."
+    )
+    parser.add_argument("--manifest", required=True, help="Path to the JSON manifest.")
+    parser.add_argument("--source-root", required=True, help="Root that source paths must stay inside.")
+    parser.add_argument(
+        "--destination-root",
+        required=True,
+        help="Root that destination paths must stay inside.",
+    )
+    return parser
+
+
+def fail(message: str, code: int = 1) -> None:
+    print(f"ERROR: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def require_real_dir(path: str, label: str) -> str:
+    if not os.path.isdir(path):
+        fail(f"{label} is not a directory: {path}")
+    if os.path.islink(path):
+        fail(f"{label} must not be a symlink: {path}")
+    return os.path.realpath(path)
+
+
+def relative_under(root: str, rel: str, label: str) -> str:
+    if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in rel.split("/"):
+        fail(f"{label} must be a relative path with no ..: {rel!r}")
+    if any(part == "" for part in rel.split("/")):
+        fail(f"{label} has an empty path component: {rel!r}")
+    named = os.path.join(root, rel)
+    if os.path.islink(named):
+        fail(f"{label} must not be a symlink: {rel}")
+    resolved = os.path.realpath(named)
+    if os.path.commonpath([root, resolved]) != root:
+        fail(f"{label} escapes {root}: {rel}")
+    return named
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def same_filesystem(left: str, right: str) -> bool:
+    return os.stat(left).st_dev == os.stat(right).st_dev
+
+
+def require_label(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        fail(f"{name} must be a nonempty string")
+    return value
+
+
+def write_txn_record(path: str, payload: dict) -> None:
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    try:
+        os.write(fd, json.dumps(payload, indent=2).encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def install_file(source: str, dest: str, size: int, digest: str) -> None:
+    if os.environ.get("COMICS_TEST_FAIL_IMAGE_MOVE") == "1" and dest.endswith(".png"):
+        raise OSError("test-forced image install failure")
+    if os.environ.get("COMICS_TEST_FAIL_SIDECAR_MOVE") == "1" and dest.endswith(".prompt.txt"):
+        raise OSError("test-forced sidecar install failure")
+    parent = os.path.dirname(dest)
+    os.makedirs(parent, exist_ok=True)
+    tmp = os.path.join(parent, f".promote-{os.getpid()}-{secrets.token_hex(6)}")
+    try:
+        shutil.copyfile(source, tmp, follow_symlinks=False)
+        if os.path.getsize(tmp) != size or sha256_file(tmp) != digest:
+            raise OSError(f"copied bytes do not match manifest digest: {source}")
+        os.link(tmp, dest)
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+
+
+def main() -> int:
+    args = usage_parser().parse_args()
+    if os.path.islink(args.manifest) or not os.path.isfile(args.manifest):
+        fail(f"manifest must be a regular non-symlink file: {args.manifest}")
+    source_root = require_real_dir(args.source_root, "source-root")
+    dest_root = require_real_dir(args.destination_root, "destination-root")
+    if not same_filesystem(source_root, dest_root):
+        fail("source-root and destination-root must be on the same filesystem")
+
+    try:
+        payload = json.loads(open(args.manifest, encoding="utf-8").read())
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"manifest is not readable JSON: {exc}")
+
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        fail("manifest schema_version must be 1")
+    require_label(payload.get("lane"), "lane")
+    item_id = require_label(payload.get("item_id"), "item_id")
+    mode = payload.get("mode")
+    if mode not in {"flat-set", "directory"}:
+        fail("manifest mode must be flat-set or directory")
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not entries:
+        fail("manifest entries must be a nonempty list")
+
+    dest_name = None
+    if mode == "directory":
+        dest_name = payload.get("destination")
+        if not isinstance(dest_name, str) or not dest_name:
+            fail("directory mode requires destination")
+
+    seen_roles: set[str] = set()
+    seen_sources: set[str] = set()
+    seen_dests: set[str] = set()
+    prepared = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            fail("each manifest entry must be an object")
+        role = entry.get("role")
+        if not isinstance(role, str) or not role:
+            fail("each manifest entry needs a nonempty role")
+        if role in seen_roles:
+            fail(f"duplicate role: {role}")
+        seen_roles.add(role)
+        source_rel = entry.get("source")
+        if not isinstance(source_rel, str) or not source_rel:
+            fail(f"entry role {role!r} is missing a source path")
+        if mode == "flat-set":
+            dest_rel = entry.get("destination")
+            if not isinstance(dest_rel, str) or not dest_rel:
+                fail(f"entry role {role!r} is missing a destination path")
+        else:
+            dest_rel = os.path.join(dest_name, os.path.basename(source_rel))
+        source_abs = relative_under(source_root, source_rel, "source")
+        dest_abs = relative_under(dest_root, dest_rel, "destination")
+        if source_abs in seen_sources or dest_abs in seen_dests:
+            fail("duplicate source or destination path")
+        seen_sources.add(source_abs)
+        seen_dests.add(dest_abs)
+        if os.path.islink(source_abs) or not os.path.isfile(source_abs):
+            fail(f"source must be a regular file: {source_rel}")
+        if os.path.lexists(dest_abs):
+            fail(f"refusing to overwrite existing destination: {dest_rel}")
+        size = entry.get("size")
+        digest = entry.get("sha256")
+        observed_size = os.path.getsize(source_abs)
+        observed_digest = sha256_file(source_abs)
+        if size != observed_size or digest != observed_digest:
+            fail(f"source digest/size mismatch: {source_rel}")
+        prepared.append((source_abs, dest_abs, str(source_rel), str(dest_rel), size, digest))
+
+    if mode == "directory":
+        parents = {os.path.dirname(source_abs) for source_abs, _, _, _, _, _ in prepared}
+        if len(parents) != 1:
+            fail("directory mode sources must share one parent directory")
+        packet_parent = next(iter(parents))
+        manifested = {os.path.basename(source_abs) for source_abs, _, _, _, _, _ in prepared}
+        extras = []
+        for name in os.listdir(packet_parent):
+            path = os.path.join(packet_parent, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                continue
+            if name not in manifested:
+                extras.append(name)
+        if extras:
+            fail(f"unmanifested passengers in source packet: {', '.join(sorted(extras))}")
+        dest_dir = relative_under(dest_root, dest_name, "destination")
+        if os.path.lexists(dest_dir):
+            fail(f"refusing to overwrite existing destination directory: {dest_name}")
+        staging = os.path.join(dest_root, f".packet-{secrets.token_hex(8)}")
+        os.mkdir(staging)
+        try:
+            for source_abs, dest_abs, _, _, size, digest in prepared:
+                target = os.path.join(staging, os.path.basename(dest_abs))
+                shutil.copyfile(source_abs, target, follow_symlinks=False)
+                if os.path.getsize(target) != size or sha256_file(target) != digest:
+                    raise OSError(f"copied bytes do not match manifest digest: {source_abs}")
+            if os.path.lexists(dest_dir):
+                raise OSError(f"destination appeared before commit: {dest_dir}")
+            os.rename(staging, dest_dir)
+        except OSError as exc:
+            if os.path.isdir(staging):
+                shutil.rmtree(staging, ignore_errors=True)
+            fail(f"directory promotion failed: {exc}")
+        for source_abs, _, _, _, _, _ in prepared:
+            try:
+                os.unlink(source_abs)
+            except OSError as exc:
+                print(f"WARNING: destination committed; leftover source {source_abs}: {exc}", file=sys.stderr)
+        return 0
+
+    txn_path = os.path.join(dest_root, f".promote-txn-{secrets.token_hex(8)}")
+    write_txn_record(
+        txn_path,
+        {
+            "item_id": item_id,
+            "mode": mode,
+            "entries": [
+                {"source": source_rel, "destination": dest_rel}
+                for _, _, source_rel, dest_rel, _, _ in prepared
+            ],
+        },
+    )
+    installed: list[tuple[str, str]] = []
+    try:
+        for source_abs, dest_abs, _, _, size, digest in prepared:
+            install_file(source_abs, dest_abs, size, digest)
+            installed.append((source_abs, dest_abs))
+            os.unlink(source_abs)
+    except OSError as exc:
+        for source_abs, dest_abs in reversed(installed):
+            if not os.path.lexists(dest_abs):
+                continue
+            try:
+                if os.path.lexists(source_abs):
+                    # Source unlink failed after a successful install: the
+                    # destination is a redundant copy, not a restore target.
+                    os.unlink(dest_abs)
+                else:
+                    os.rename(dest_abs, source_abs)
+            except OSError:
+                fail(
+                    f"sidecar or image install failed and rollback also failed: {dest_abs} (txn {txn_path})",
+                    2,
+                )
+        if os.path.lexists(txn_path):
+            os.unlink(txn_path)
+        print(f"ERROR: promotion failed; sources were restored: {exc}", file=sys.stderr)
+        return 1
+    if os.path.lexists(txn_path):
+        os.unlink(txn_path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

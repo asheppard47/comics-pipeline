@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Run one image-provider call in a newly created exclusive directory."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def usage_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run one image-generation call in an exclusive empty directory."
+    )
+    parser.add_argument("--provider-cli", required=True, help="Path to the image-provider CLI adapter.")
+    parser.add_argument("--prompt-file", required=True, help="UTF-8 file containing the full prompt.")
+    parser.add_argument("--style-reference", required=True, help="Style reference image path.")
+    parser.add_argument("--provider-route", required=True, help="Provider route name, e.g. gemini-image.")
+    parser.add_argument("--aspect-ratio", required=True, help="Aspect ratio. No chassis default.")
+    parser.add_argument("--image-size", required=True, help="Image size. No chassis default.")
+    parser.add_argument("--output-parent", required=True, help="Existing directory that will own the run dir.")
+    parser.add_argument(
+        "--outer-wait-secs",
+        default=os.environ.get("COMICS_PROVIDER_WAIT_SECS", "1900"),
+        help="Finite outer wait in seconds.",
+    )
+    parser.add_argument(
+        "--termination-grace-secs",
+        default=os.environ.get("COMICS_PROVIDER_GRACE_SECS", "5"),
+        help="TERM-to-KILL grace in seconds.",
+    )
+    return parser
+
+
+def fail(message: str, code: int = 1) -> None:
+    print(f"ERROR: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def require_real_file(path: str, label: str) -> str:
+    if not os.path.isfile(path) or os.path.islink(path):
+        fail(f"{label} must be a regular file: {path}")
+    return os.path.realpath(path)
+
+
+def require_real_dir(path: str, label: str) -> str:
+    if not os.path.isdir(path):
+        fail(f"{label} is not a directory: {path}")
+    if os.path.islink(path):
+        fail(f"{label} must not be a symlink: {path}")
+    return os.path.realpath(path)
+
+
+def positive_seconds(raw: str, name: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        fail(f"{name} must be a finite positive number of seconds.")
+    if not math.isfinite(value) or value <= 0:
+        fail(f"{name} must be a finite positive number of seconds.")
+    return value
+
+
+def select_image(run_dir: str) -> str:
+    candidates = []
+    for name in os.listdir(run_dir):
+        path = os.path.join(run_dir, name)
+        if os.path.islink(path):
+            fail(f"provider wrote a symlink image: {path}")
+        if not os.path.isfile(path):
+            continue
+        if os.path.splitext(name)[1].lower() in {".jpg", ".jpeg", ".png"}:
+            if os.path.getsize(path) == 0:
+                fail(f"provider wrote a zero-byte image: {path}")
+            candidates.append(path)
+    if not candidates:
+        fail(f"no new image found in {run_dir}")
+    if len(candidates) != 1:
+        listed = "\n".join(f"  {item}" for item in candidates)
+        fail(f"expected exactly one generated image, found {len(candidates)}.\n{listed}")
+    return candidates[0]
+
+
+def run_provider(
+    provider_cli: str,
+    style_reference: str,
+    prompt: str,
+    route: str,
+    aspect: str,
+    size: str,
+    run_dir: str,
+    outer_wait: float,
+    termination_grace: float,
+) -> int:
+    outer_deadline = time.monotonic() + outer_wait
+    remaining = outer_deadline - time.monotonic()
+    if remaining <= 0:
+        fail("no caller capacity remains; the provider CLI was not started.")
+
+    child_env = os.environ.copy()
+    child_env["PROVIDER_CALLER_DEADLINE_SECS"] = f"{remaining:.6f}"
+    argv = [
+        sys.executable,
+        provider_cli,
+        "single",
+        style_reference,
+        prompt,
+        route,
+        "--aspect-ratio",
+        aspect,
+        "--image-size",
+        size,
+        "--output-dir",
+        run_dir,
+    ]
+    try:
+        child = subprocess.Popen(
+            argv,
+            env=child_env,
+            start_new_session=True,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+        )
+    except OSError as exc:
+        fail(f"could not start the provider CLI: {exc}")
+
+    def terminate_and_reap() -> None:
+        if child.poll() is not None:
+            return
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            child.wait(timeout=termination_grace)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+
+    def cancel(signum: int, _frame: object) -> None:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        terminate_and_reap()
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, cancel)
+    signal.signal(signal.SIGTERM, cancel)
+    try:
+        returncode = child.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        print(
+            f"ERROR: the provider CLI exceeded the caller's {outer_wait:g}-second outer wait; terminating its process group.",
+            file=sys.stderr,
+        )
+        terminate_and_reap()
+        raise SystemExit(124)
+    return returncode if returncode >= 0 else 128 - returncode
+
+
+def main() -> int:
+    args = usage_parser().parse_args()
+    provider_cli = require_real_file(args.provider_cli, "provider-cli")
+    prompt_file = require_real_file(args.prompt_file, "prompt-file")
+    style_reference = require_real_file(args.style_reference, "style-reference")
+    parent = require_real_dir(args.output_parent, "output-parent")
+    prompt = open(prompt_file, encoding="utf-8").read()
+    outer_wait = positive_seconds(str(args.outer_wait_secs), "outer-wait-secs")
+    grace = positive_seconds(str(args.termination_grace_secs), "termination-grace-secs")
+    run_dir = tempfile.mkdtemp(prefix=".provider-run.", dir=parent)
+    status = run_provider(
+        provider_cli,
+        style_reference,
+        prompt,
+        args.provider_route,
+        args.aspect_ratio,
+        args.image_size,
+        run_dir,
+        outer_wait,
+        grace,
+    )
+    if status != 0:
+        print(f"ERROR: image generation failed with exit {status}.", file=sys.stderr)
+        print(f"provider run directory: {run_dir}", file=sys.stderr)
+        return status
+    image = select_image(run_dir)
+    print(json.dumps({
+        "run_dir": run_dir,
+        "image": image,
+        "provider_exit": status,
+        "provider_route": args.provider_route,
+    }, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Write stdin bytes to a new file with no overwrite and no interpolation."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import secrets
+import sys
+
+
+def usage_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Write stdin bytes to a new destination. Refuses overwrite."
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Destination path. Must not already exist.",
+    )
+    return parser
+
+
+def real_parent(path: str) -> str:
+    parent = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(parent):
+        raise SystemExit(f"ERROR: destination directory does not exist: {parent}")
+    if os.path.islink(parent):
+        raise SystemExit(f"ERROR: destination parent must not be a symlink: {parent}")
+    return parent
+
+
+def main() -> int:
+    args = usage_parser().parse_args()
+    dest = args.output
+    if os.path.lexists(dest):
+        print(f"ERROR: refusing to overwrite existing path: {dest}", file=sys.stderr)
+        return 1
+    parent = real_parent(dest)
+    body = sys.stdin.buffer.read()
+    tmp = os.path.join(parent, f".literal-{os.getpid()}-{secrets.token_hex(8)}")
+    try:
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        try:
+            written = 0
+            while written < len(body):
+                written += os.write(fd, body[written:])
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.link(tmp, dest)
+    except FileExistsError:
+        print(f"ERROR: refusing to overwrite existing path: {dest}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"ERROR: could not write {dest}: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if os.path.lexists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
