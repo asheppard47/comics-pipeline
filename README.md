@@ -23,9 +23,9 @@ against any image model that can follow a prompt.
 - bash and Python 3
 - Pillow (`python3 -m pip install Pillow`) for the caption, signature, and
   validation helpers
-- an image-provider CLI adapter (see `providers/README.md`)
+- an image-provider CLI adapter (see [providers/README.md](providers/README.md))
 - a signature image at `references/signature_transparent.png`. The repository
-  ships a placeholder; replace it with your own (see below).
+  ships a placeholder; select your own with `COMICS_SIGNATURE` (see below).
 
 ## Quick start
 
@@ -33,10 +33,11 @@ against any image model that can follow a prompt.
 # 1. Point the pipeline at your image-provider CLI.
 export COMICS_PROVIDER_CLI=/path/to/your/image-cli
 
-# 2. Create your signature asset (replace the placeholder).
+# 2. Create your signature asset at an unused output path.
 #    Draw or generate a signature on white, then extract it with a
 #    transparent background:
-python3 scripts/extract-signature.py my-signature.jpg references/signature_transparent.png
+python3 scripts/extract-signature.py my-signature.jpg /path/to/my-signature.png
+export COMICS_SIGNATURE=/path/to/my-signature.png
 
 # 3. Generate a signed, captioned panel.
 ./scripts/generate-comic.sh "Man at an ATM with an angel and a devil on his shoulders" \
