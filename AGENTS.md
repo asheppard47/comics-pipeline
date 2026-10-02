@@ -1,5 +1,8 @@
 # Comics Pipeline — Agent Rules
 
+Start with [README.md](README.md) for setup and usage, then
+[docs/PRODUCTION_WORKFLOW.md](docs/PRODUCTION_WORKFLOW.md) for the production workflow.
+
 This repository is a single-panel, New Yorker-style cartoon pipeline. It is
 operated by an agent harness and validated offline.
 
