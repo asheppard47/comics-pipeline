@@ -81,6 +81,8 @@ exact prompt and request without calling the provider or writing files.
 
 ## Outputs
 
+The [output layout guide](outputs/README.md) owns prototype and final storage conventions.
+
 | Type | Pattern |
 |---|---|
 | Prototype | `outputs/prototypes/YYYY-MM-DD/concept_signed.png` |
@@ -130,7 +132,7 @@ Run it before treating any output tree as production-ready.
 
 ## Style rules
 
-See `docs/STYLE_GUIDE.md` for the full guide. The short version:
+See [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md) for the full guide. The short version:
 
 - clean black ink line work on white, minimal crosshatching, no color
 - single panel, caption space at the bottom

@@ -55,7 +55,7 @@ The model is instructed to borrow line quality, restrained shading, proportions,
 and caption treatment only, never the reference subject, layout, text, or marks.
 
 The remaining approved anchors and their intended uses are documented in
-`references/style/README.md`. Override the default for a specific run with
+[references/style/README.md](../references/style/README.md). Override the default for a specific run with
 `COMICS_STYLE_REFERENCE=/absolute/path/to/approved-reference.jpg`.
 
 ## Joke Structure
