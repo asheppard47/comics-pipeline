@@ -207,8 +207,8 @@ Run the offline contract check after promotion:
 ./scripts/validate-production.sh
 ```
 
-Current final/sidecar counts and the last validator run live in
-`AGENTS.md` § Production Integrity Gate, not here. The published June 26
+Use `./scripts/validate-production.sh` to check current final/sidecar integrity;
+this repository does not maintain a dated count ledger in `AGENTS.md`. The published June 26
 AI-regulation comic was restored from its verified X-recovered media with an
 honestly reconstructed provenance record.
 
@@ -258,7 +258,7 @@ separately when it is genuinely stale.
 - **aspect**: 4:3 (default), 1:1, 9:16
 - **size**: 2K (default), 1K, 4K
 - **--dry-run**: Validate and print the request without an API call or file write
-- Calls `scripts/chassis/run-image-provider` and `write-literal-file` internally. The New Yorker prompt, signature, and sidecar headings stay here. See `docs/chassis-spec.md`.
+- Calls `scripts/chassis/run-image-provider` and `write-literal-file` internally. The New Yorker prompt, signature, and sidecar headings stay here. See [the chassis specification](chassis-spec.md).
 
 ### add-caption.py
 ```bash
